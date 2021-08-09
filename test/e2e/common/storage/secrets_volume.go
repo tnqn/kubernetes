@@ -201,7 +201,7 @@ var _ = SIGDescribe("Secrets", func() {
 	*/
 	framework.ConformanceIt("optional updates should be reflected in volume [NodeConformance]", func() {
 		podLogTimeout := e2epod.GetPodSecretUpdateTimeout(f.ClientSet)
-		containerTimeoutArg := fmt.Sprintf("--retry_time=%v", int(podLogTimeout.Seconds()))
+		containerTimeoutArg := fmt.Sprintf("--retry_time=%v", 300)
 		trueVal := true
 		volumeMountPath := "/etc/secret-volumes"
 
@@ -598,8 +598,7 @@ func doSecretE2EWithMapping(f *framework.Framework, mode *int32) {
 }
 
 func createNonOptionalSecretPod(f *framework.Framework, volumeMountPath, podName string) error {
-	podLogTimeout := e2epod.GetPodSecretUpdateTimeout(f.ClientSet)
-	containerTimeoutArg := fmt.Sprintf("--retry_time=%v", int(podLogTimeout.Seconds()))
+	containerTimeoutArg := fmt.Sprintf("--retry_time=%v", 600)
 	falseValue := false
 
 	createName := "s-test-opt-create-" + string(uuid.NewUUID())

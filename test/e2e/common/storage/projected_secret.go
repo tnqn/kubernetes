@@ -211,7 +211,7 @@ var _ = SIGDescribe("Projected secret", func() {
 	*/
 	framework.ConformanceIt("optional updates should be reflected in volume [NodeConformance]", func() {
 		podLogTimeout := e2epod.GetPodSecretUpdateTimeout(f.ClientSet)
-		containerTimeoutArg := fmt.Sprintf("--retry_time=%v", int(podLogTimeout.Seconds()))
+		containerTimeoutArg := fmt.Sprintf("--retry_time=%v", 300)
 		trueVal := true
 		volumeMountPath := "/etc/projected-secret-volumes"
 

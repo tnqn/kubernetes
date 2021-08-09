@@ -60,7 +60,7 @@ var NodePrePullImageList = sets.NewString(
 	imageutils.GetE2EImage(imageutils.Perl),
 	imageutils.GetE2EImage(imageutils.Nonewprivs),
 	imageutils.GetPauseImageName(),
-	getGPUDevicePluginImage(),
+	//getGPUDevicePluginImage(),
 	imageutils.GetE2EImage(imageutils.NodePerfNpbEp),
 	imageutils.GetE2EImage(imageutils.NodePerfNpbIs),
 	imageutils.GetE2EImage(imageutils.NodePerfTfWideDeep),
@@ -193,9 +193,11 @@ func PrePullAllImages() error {
 					if retryCount > 0 {
 						time.Sleep(imagePullRetryDelay)
 					}
+					klog.Warningf("Pulling %d image: %s", i, images[i])
 					if output, pullErr = puller.Pull(images[i]); pullErr == nil {
 						break
 					}
+					klog.Warningf("Pulled %d image: %s", i, images[i])
 					klog.Warningf("Failed to pull %s as user %q, retrying in %s (%d of %d): %v",
 						images[i], usr.Username, imagePullRetryDelay.String(), retryCount+1, maxImagePullRetries, pullErr)
 				}

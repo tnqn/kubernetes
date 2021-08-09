@@ -227,15 +227,18 @@ func (c *cacheBasedManager) RegisterPod(pod *v1.Pod) {
 	key := objectKey{namespace: pod.Namespace, name: pod.Name}
 	prev = c.registeredPods[key]
 	c.registeredPods[key] = pod
-	var prevNames sets.String
 	if prev != nil {
-		prevNames = c.getReferencedObjects(prev)
+		for name := range c.getReferencedObjects(prev) {
+			c.objectStore.DeleteReference(pod.Namespace, name, pod.UID)
+		}
 	}
-	for name := range names.Difference(prevNames) {
+	// On an update, the .Add() call above will have re-incremented the
+	// ref count of any existing object, so any objects that are in both
+	// names and prev need to have their ref counts decremented. Any that
+	// are only in prev need to be completely removed. This unconditional
+	// call takes care of both cases.
+	for name := range names {
 		c.objectStore.AddReference(pod.Namespace, name, pod.UID)
-	}
-	for name := range prevNames.Difference(names) {
-		c.objectStore.DeleteReference(pod.Namespace, name, pod.UID)
 	}
 }
 

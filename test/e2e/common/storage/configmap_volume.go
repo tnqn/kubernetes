@@ -19,6 +19,8 @@ package storage
 import (
 	"context"
 	"fmt"
+	"k8s.io/kubernetes/pkg/kubelet/apis/config"
+	e2ekubelet "k8s.io/kubernetes/test/e2e/framework/kubelet"
 	"path"
 
 	"github.com/onsi/ginkgo"
@@ -146,13 +148,19 @@ var _ = SIGDescribe("ConfigMap", func() {
 			"--break_on_expected_content=false", containerTimeoutArg, "--file_content_in_loop=/etc/configmap-volume/data-1")
 
 		ginkgo.By("Creating the pod")
-		f.PodClient().CreateSync(pod)
+		pod = f.PodClient().CreateSync(pod)
+		kubeleConfig, err := e2ekubelet.GetCurrentKubeletConfig(pod.Spec.NodeName, "", false)
+		framework.ExpectNoError(err)
+		updateDetectionTimeout := podLogTimeout
+		if kubeleConfig.ConfigMapAndSecretChangeDetectionStrategy == config.WatchChangeDetectionStrategy {
+			updateDetectionTimeout = framework.Poll * 2
+		}
 
 		pollLogs := func() (string, error) {
 			return e2epod.GetPodLogs(f.ClientSet, f.Namespace.Name, pod.Name, pod.Spec.Containers[0].Name)
 		}
 
-		gomega.Eventually(pollLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("value-1"))
+		gomega.Eventually(pollLogs, updateDetectionTimeout, framework.Poll).Should(gomega.ContainSubstring("value-1"))
 
 		ginkgo.By(fmt.Sprintf("Updating configmap %v", configMap.Name))
 		configMap.ResourceVersion = "" // to force update
@@ -161,7 +169,7 @@ var _ = SIGDescribe("ConfigMap", func() {
 		framework.ExpectNoError(err, "Failed to update configmap %q in namespace %q", configMap.Name, f.Namespace.Name)
 
 		ginkgo.By("waiting to observe update in volume")
-		gomega.Eventually(pollLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("value-2"))
+		gomega.Eventually(pollLogs, updateDetectionTimeout, framework.Poll).Should(gomega.ContainSubstring("value-2"))
 	})
 
 	/*
@@ -372,7 +380,13 @@ var _ = SIGDescribe("ConfigMap", func() {
 			},
 		}
 		ginkgo.By("Creating the pod")
-		f.PodClient().CreateSync(pod)
+		pod = f.PodClient().CreateSync(pod)
+		kubeleConfig, err := e2ekubelet.GetCurrentKubeletConfig(pod.Spec.NodeName, "", false)
+		framework.ExpectNoError(err)
+		updateDetectionTimeout := podLogTimeout
+		if kubeleConfig.ConfigMapAndSecretChangeDetectionStrategy == config.WatchChangeDetectionStrategy {
+			updateDetectionTimeout = framework.Poll * 2
+		}
 
 		pollCreateLogs := func() (string, error) {
 			return e2epod.GetPodLogs(f.ClientSet, f.Namespace.Name, pod.Name, createContainerName)
@@ -407,9 +421,9 @@ var _ = SIGDescribe("ConfigMap", func() {
 
 		ginkgo.By("waiting to observe update in volume")
 
-		gomega.Eventually(pollCreateLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("value-1"))
-		gomega.Eventually(pollUpdateLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("value-3"))
-		gomega.Eventually(pollDeleteLogs, podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("Error reading file /etc/configmap-volumes/delete/data-1"))
+		gomega.Eventually(pollCreateLogs, updateDetectionTimeout, framework.Poll).Should(gomega.ContainSubstring("value-1"))
+		gomega.Eventually(pollUpdateLogs, updateDetectionTimeout, framework.Poll).Should(gomega.ContainSubstring("value-3"))
+		gomega.Eventually(pollDeleteLogs, updateDetectionTimeout, framework.Poll).Should(gomega.ContainSubstring("Error reading file /etc/configmap-volumes/delete/data-1"))
 	})
 
 	/*
