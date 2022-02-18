@@ -58,7 +58,7 @@ type FakeRuntime struct {
 	Err               error
 	InspectErr        error
 	StatusErr         error
-	T                 *testing.T
+	T                 testing.TB
 }
 
 const FakeHost = "localhost:12345"

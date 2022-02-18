@@ -20,6 +20,8 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	corev1lister "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
 	"net"
 	"os"
 	"path/filepath"
@@ -385,12 +387,12 @@ func TestMakeEnvironmentVariables(t *testing.T) {
 		buildService("test", "test1", "1.2.3.3", "TCP", 8083),
 		buildService("kubernetes", "test2", "1.2.3.4", "TCP", 8084),
 		buildService("test", "test2", "1.2.3.5", "TCP", 8085),
-		buildService("test", "test2", "None", "TCP", 8085),
-		buildService("test", "test2", "", "TCP", 8085),
+		buildService("test2", "test2", "None", "TCP", 8085),
+		buildService("test3", "test2", "", "TCP", 8085),
 		buildService("kubernetes", "kubernetes", "1.2.3.6", "TCP", 8086),
 		buildService("not-special", "kubernetes", "1.2.3.8", "TCP", 8088),
-		buildService("not-special", "kubernetes", "None", "TCP", 8088),
-		buildService("not-special", "kubernetes", "", "TCP", 8088),
+		buildService("not-special2", "kubernetes", "None", "TCP", 8088),
+		buildService("not-special3", "kubernetes", "", "TCP", 8088),
 	}
 
 	trueValue := true
@@ -1678,10 +1680,14 @@ func TestMakeEnvironmentVariables(t *testing.T) {
 			if tc.nilLister {
 				kl.serviceLister = nil
 			} else if tc.unsyncedServices {
-				kl.serviceLister = testServiceLister{}
+				kl.serviceLister = corev1lister.NewServiceLister(cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}))
 				kl.serviceHasSynced = func() bool { return false }
 			} else {
-				kl.serviceLister = testServiceLister{services}
+				indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+				for _, service := range services {
+					indexer.Add(service)
+				}
+				kl.serviceLister = corev1lister.NewServiceLister(indexer)
 				kl.serviceHasSynced = func() bool { return true }
 			}
 
@@ -1748,6 +1754,47 @@ func TestMakeEnvironmentVariables(t *testing.T) {
 
 	}
 }
+
+func BenchmarkGetServiceEnvVarMap(b *testing.B) {
+	fakeRecorder := record.NewFakeRecorder(1)
+	testKubelet := newTestKubelet(b, false /* controllerAttachDetachEnabled */)
+	testKubelet.kubelet.recorder = fakeRecorder
+	defer testKubelet.Cleanup()
+	kl := testKubelet.kubelet
+	kl.masterServiceNamespace = "default"
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+
+	services := []*v1.Service{
+		buildService("kubernetes", metav1.NamespaceDefault, "1.2.3.1", "TCP", 8081),
+		buildService("test", "test1", "1.2.3.3", "TCP", 8083),
+		buildService("kubernetes", "test2", "1.2.3.4", "TCP", 8084),
+		buildService("test", "test2", "1.2.3.5", "TCP", 8085),
+		buildService("test2", "test2", "None", "TCP", 8085),
+		buildService("test3", "test2", "", "TCP", 8085),
+		buildService("kubernetes", "kubernetes", "1.2.3.6", "TCP", 8086),
+		buildService("not-special", "kubernetes", "1.2.3.8", "TCP", 8088),
+		buildService("not-special2", "kubernetes", "None", "TCP", 8088),
+		buildService("not-special3", "kubernetes", "", "TCP", 8088),
+	}
+	for i:=0; i<100;i++ {
+		for j:=0; j<10; j++ {
+			services = append(services, buildService(fmt.Sprintf("service-%d", j), fmt.Sprintf("ns-%d", i), "", "TCP", 8080))
+		}
+	}
+
+	for _, service := range services {
+		indexer.Add(service)
+	}
+	kl.serviceLister = corev1lister.NewServiceLister(indexer)
+	kl.serviceHasSynced = func() bool { return true }
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		kl.getServiceEnvVarMap("tests", true)
+	}
+}
+
 
 func waitingState(cName string) v1.ContainerStatus {
 	return waitingStateWithReason(cName, "")

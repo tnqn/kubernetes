@@ -533,30 +533,32 @@ func (kl *Kubelet) getServiceEnvVarMap(ns string, enableServiceLinks bool) (map[
 		// Kubelets without masters (e.g. plain GCE ContainerVM) don't set env vars.
 		return m, nil
 	}
-	services, err := kl.serviceLister.List(labels.Everything())
-	if err != nil {
-		return m, fmt.Errorf("failed to list services when setting up env vars")
-	}
 
-	// project the services in namespace ns onto the master services
-	for i := range services {
-		service := services[i]
+	addService := func(service *v1.Service) {
 		// ignore services where ClusterIP is "None" or empty
 		if !v1helper.IsServiceIPSet(service) {
-			continue
+			return
 		}
-		serviceName := service.Name
+		serviceMap[service.Name] = service
+	}
 
-		// We always want to add environment variabled for master services
-		// from the master service namespace, even if enableServiceLinks is false.
-		// We also add environment variables for other services in the same
-		// namespace, if enableServiceLinks is true.
-		if service.Namespace == kl.masterServiceNamespace && masterServices.Has(serviceName) {
-			if _, exists := serviceMap[serviceName]; !exists {
-				serviceMap[serviceName] = service
+	// We always want to add environment variabled for master services
+	// from the master service namespace, even if enableServiceLinks is false.
+	if kl.masterServiceNamespace != "" && len(masterServices) > 0 {
+		for masterService := range masterServices {
+			service, err := kl.serviceLister.Services(kl.masterServiceNamespace).Get(masterService)
+			if err != nil {
+				continue
 			}
-		} else if service.Namespace == ns && enableServiceLinks {
-			serviceMap[serviceName] = service
+			addService(service)
+		}
+	}
+	// We also add environment variables for other services in the same
+	// namespace, if enableServiceLinks is true.
+	if enableServiceLinks {
+		services, _ := kl.serviceLister.Services(ns).List(labels.Everything())
+		for _, service := range services {
+			addService(service)
 		}
 	}
 

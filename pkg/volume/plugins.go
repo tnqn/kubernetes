@@ -640,7 +640,7 @@ func (pm *VolumePluginMgr) InitPlugins(plugins []VolumePlugin, prober DynamicPlu
 			continue
 		}
 		pm.plugins[name] = plugin
-		klog.V(1).InfoS("Loaded volume plugin", "pluginName", name)
+	//	klog.V(1).InfoS("Loaded volume plugin", "pluginName", name)
 	}
 	return utilerrors.NewAggregate(allErrs)
 }

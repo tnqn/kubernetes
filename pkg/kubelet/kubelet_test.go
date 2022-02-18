@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 	"io/ioutil"
+	corev1lister "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
 	"os"
 	"reflect"
 	goruntime "runtime"
@@ -128,7 +130,7 @@ func (tk *TestKubelet) Cleanup() {
 }
 
 // newTestKubelet returns test kubelet with two images.
-func newTestKubelet(t *testing.T, controllerAttachDetachEnabled bool) *TestKubelet {
+func newTestKubelet(t testing.TB, controllerAttachDetachEnabled bool) *TestKubelet {
 	imageList := []kubecontainer.Image{
 		{
 			ID:       "abc",
@@ -145,7 +147,7 @@ func newTestKubelet(t *testing.T, controllerAttachDetachEnabled bool) *TestKubel
 }
 
 func newTestKubeletWithImageList(
-	t *testing.T,
+	t testing.TB,
 	imageList []kubecontainer.Image,
 	controllerAttachDetachEnabled bool,
 	initFakeVolumePlugin bool) *TestKubelet {
@@ -188,7 +190,7 @@ func newTestKubeletWithImageList(
 	}
 	kubelet.sourcesReady = config.NewSourcesReady(func(_ sets.String) bool { return true })
 	kubelet.masterServiceNamespace = metav1.NamespaceDefault
-	kubelet.serviceLister = testServiceLister{}
+	kubelet.serviceLister = corev1lister.NewServiceLister(cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}))
 	kubelet.serviceHasSynced = func() bool { return true }
 	kubelet.nodeHasSynced = func() bool { return true }
 	kubelet.nodeLister = testNodeLister{

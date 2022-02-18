@@ -912,7 +912,7 @@ type Kubelet struct {
 	// masterServiceNamespace is the namespace that the master service is exposed in.
 	masterServiceNamespace string
 	// serviceLister knows how to list services
-	serviceLister serviceLister
+	serviceLister corelisters.ServiceLister
 	// serviceHasSynced indicates whether services have been sync'd at least once.
 	// Check this before trusting a response from the lister.
 	serviceHasSynced cache.InformerSynced
