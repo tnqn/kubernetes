@@ -568,8 +568,8 @@ func TestServiceMapUpdateHeadless(t *testing.T) {
 		t.Errorf("expected service map length 0, got %d", len(fp.svcPortMap))
 	}
 
-	if len(result.DeletedUDPClusterIPs) != 0 {
-		t.Errorf("expected stale UDP services length 0, got %d", len(result.DeletedUDPClusterIPs))
+	if len(result.DeletedUDPServicePorts) != 0 {
+		t.Errorf("expected stale UDP service ports length 0, got %d", len(result.DeletedUDPServicePorts))
 	}
 
 	// No proxied services, so no healthchecks
@@ -599,8 +599,8 @@ func TestUpdateServiceTypeExternalName(t *testing.T) {
 	if len(fp.svcPortMap) != 0 {
 		t.Errorf("expected service map length 0, got %v", fp.svcPortMap)
 	}
-	if len(result.DeletedUDPClusterIPs) != 0 {
-		t.Errorf("expected stale UDP services length 0, got %v", result.DeletedUDPClusterIPs)
+	if len(result.DeletedUDPServicePorts) != 0 {
+		t.Errorf("expected stale UDP service ports length 0, got %v", result.DeletedUDPServicePorts)
 	}
 
 	// No proxied services, so no healthchecks
@@ -673,9 +673,9 @@ func TestBuildServiceMapAddRemove(t *testing.T) {
 	if len(fp.svcPortMap) != 8 {
 		t.Errorf("expected service map length 2, got %v", fp.svcPortMap)
 	}
-	if len(result.DeletedUDPClusterIPs) != 0 {
+	if len(result.DeletedUDPServicePorts) != 0 {
 		// Services only added, so nothing stale yet
-		t.Errorf("expected stale UDP services length 0, got %d", len(result.DeletedUDPClusterIPs))
+		t.Errorf("expected stale UDP service ports length 0, got %d", len(result.DeletedUDPServicePorts))
 	}
 
 	// The only-local-loadbalancer ones get added
@@ -694,7 +694,7 @@ func TestBuildServiceMapAddRemove(t *testing.T) {
 	oneService := makeTestService("ns2", "cluster-ip", func(svc *v1.Service) {
 		svc.Spec.Type = v1.ServiceTypeClusterIP
 		svc.Spec.ClusterIP = "172.16.55.4"
-		svc.Spec.Ports = addTestPort(svc.Spec.Ports, "p2", "UDP", 1235, 5321, 0)
+		svc.Spec.Ports = addTestPort(svc.Spec.Ports, "port2", "UDP", 1235, 5321, 0)
 	})
 
 	fp.updateService(services[0], oneService)
@@ -716,16 +716,25 @@ func TestBuildServiceMapAddRemove(t *testing.T) {
 		t.Errorf("expected 0 healthcheck ports, got %v", healthCheckNodePorts)
 	}
 
-	// All services but one were deleted. While you'd expect only the ClusterIPs
-	// from the three deleted services here, we still have the ClusterIP for
-	// the not-deleted service, because one of it's ServicePorts was deleted.
-	expectedDeletedUDPClusterIPs := []string{"172.16.55.10", "172.16.55.4", "172.16.55.11", "172.16.55.12"}
-	if len(result.DeletedUDPClusterIPs) != len(expectedDeletedUDPClusterIPs) {
-		t.Errorf("expected stale UDP services length %d, got %v", len(expectedDeletedUDPClusterIPs), result.DeletedUDPClusterIPs.UnsortedList())
+	// All services but one were deleted.
+	expectedDeletedUDPServicePorts := sets.New[string](
+		"172.16.55.4:1234/UDP",
+		"172.16.55.10:345/UDP",
+		"172.16.55.11:8675/UDP",
+		"172.16.55.11:8676/UDP",
+		"172.16.55.12:8677/UDP",
+		"172.16.55.12:8678/UDP",
+	)
+	if len(result.DeletedUDPServicePorts) != len(expectedDeletedUDPServicePorts) {
+		t.Errorf("expected stale UDP services length %d, got %v", len(expectedDeletedUDPServicePorts), result.DeletedUDPServicePorts)
 	}
-	for _, ip := range expectedDeletedUDPClusterIPs {
-		if !result.DeletedUDPClusterIPs.Has(ip) {
-			t.Errorf("expected stale UDP service service %s", ip)
+	actualDeletedUDPServicePorts := sets.New[string]()
+	for _, servicePort := range result.DeletedUDPServicePorts {
+		actualDeletedUDPServicePorts.Insert(servicePort.String())
+	}
+	for servicePort := range expectedDeletedUDPServicePorts {
+		if !actualDeletedUDPServicePorts.Has(servicePort) {
+			t.Errorf("expected stale UDP service port %s", servicePort)
 		}
 	}
 }
@@ -764,9 +773,9 @@ func TestBuildServiceMapServiceUpdate(t *testing.T) {
 	if len(fp.svcPortMap) != 2 {
 		t.Errorf("expected service map length 2, got %v", fp.svcPortMap)
 	}
-	if len(result.DeletedUDPClusterIPs) != 0 {
+	if len(result.DeletedUDPServicePorts) != 0 {
 		// Services only added, so nothing stale yet
-		t.Errorf("expected stale UDP services length 0, got %d", len(result.DeletedUDPClusterIPs))
+		t.Errorf("expected stale UDP services length 0, got %d", len(result.DeletedUDPServicePorts))
 	}
 
 	healthCheckNodePorts := fp.svcPortMap.HealthCheckNodePorts()
@@ -784,8 +793,8 @@ func TestBuildServiceMapServiceUpdate(t *testing.T) {
 	if len(fp.svcPortMap) != 2 {
 		t.Errorf("expected service map length 2, got %v", fp.svcPortMap)
 	}
-	if len(result.DeletedUDPClusterIPs) != 0 {
-		t.Errorf("expected stale UDP services length 0, got %v", result.DeletedUDPClusterIPs.UnsortedList())
+	if len(result.DeletedUDPServicePorts) != 0 {
+		t.Errorf("expected stale UDP services length 0, got %v", result.DeletedUDPServicePorts)
 	}
 
 	healthCheckNodePorts = fp.svcPortMap.HealthCheckNodePorts()
@@ -804,8 +813,8 @@ func TestBuildServiceMapServiceUpdate(t *testing.T) {
 	if len(fp.svcPortMap) != 2 {
 		t.Errorf("expected service map length 2, got %v", fp.svcPortMap)
 	}
-	if len(result.DeletedUDPClusterIPs) != 0 {
-		t.Errorf("expected stale UDP services length 0, got %v", result.DeletedUDPClusterIPs.UnsortedList())
+	if len(result.DeletedUDPServicePorts) != 0 {
+		t.Errorf("expected stale UDP services length 0, got %v", result.DeletedUDPServicePorts)
 	}
 
 	healthCheckNodePorts = fp.svcPortMap.HealthCheckNodePorts()
@@ -823,9 +832,9 @@ func TestBuildServiceMapServiceUpdate(t *testing.T) {
 	if len(fp.svcPortMap) != 2 {
 		t.Errorf("expected service map length 2, got %v", fp.svcPortMap)
 	}
-	if len(result.DeletedUDPClusterIPs) != 0 {
+	if len(result.DeletedUDPServicePorts) != 0 {
 		// Services only added, so nothing stale yet
-		t.Errorf("expected stale UDP services length 0, got %d", len(result.DeletedUDPClusterIPs))
+		t.Errorf("expected stale UDP services length 0, got %d", len(result.DeletedUDPServicePorts))
 	}
 
 	healthCheckNodePorts = fp.svcPortMap.HealthCheckNodePorts()

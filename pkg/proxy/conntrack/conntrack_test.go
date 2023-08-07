@@ -107,19 +107,20 @@ func TestClearUDPConntrackForIP(t *testing.T) {
 	testCases := []struct {
 		name string
 		ip   string
+		port int
 	}{
-		{"IPv4 success", "10.240.0.3"},
-		{"IPv4 success", "10.240.0.5"},
-		{"IPv4 simulated error", "10.240.0.4"},
-		{"IPv6 success", "2001:db8::10"},
+		{"IPv4 success", "10.240.0.3", 80},
+		{"IPv4 success", "10.240.0.5", 443},
+		{"IPv4 simulated error", "10.240.0.4", 8080},
+		{"IPv6 success", "2001:db8::10", 6443},
 	}
 
 	svcCount := 0
 	for _, tc := range testCases {
-		if err := ClearEntriesForIP(fexec, tc.ip, v1.ProtocolUDP); err != nil {
+		if err := ClearEntriesForIPPort(fexec, tc.ip, tc.port, v1.ProtocolUDP); err != nil {
 			t.Errorf("%s test case:, Unexpected error: %v", tc.name, err)
 		}
-		expectCommand := fmt.Sprintf("conntrack -D --orig-dst %s -p udp", tc.ip) + familyParamStr(utilnet.IsIPv6String(tc.ip))
+		expectCommand := fmt.Sprintf("conntrack -D --orig-dst %s -p udp --dport %d", tc.ip, tc.port) + familyParamStr(utilnet.IsIPv6String(tc.ip))
 		execCommand := strings.Join(fcmd.CombinedOutputLog[svcCount], " ")
 		if expectCommand != execCommand {
 			t.Errorf("%s test case: Expect command: %s, but executed %s", tc.name, expectCommand, execCommand)

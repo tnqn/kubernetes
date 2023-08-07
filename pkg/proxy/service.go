@@ -335,16 +335,15 @@ func (sct *ServiceChangeTracker) PendingChanges() sets.Set[string] {
 
 // UpdateServiceMapResult is the updated results after applying service changes.
 type UpdateServiceMapResult struct {
-	// DeletedUDPClusterIPs holds stale (no longer assigned to a Service) Service IPs
-	// that had UDP ports. Callers can use this to abort timeout-waits or clear
-	// connection-tracking information.
-	DeletedUDPClusterIPs sets.Set[string]
+	// DeletedUDPServicePorts holds stale ServicePorts that had UDP ports. Callers
+	// can use this to abort timeout-waits or clear connection-tracking information.
+	DeletedUDPServicePorts []ServicePort
 }
 
 // Update updates ServicePortMap base on the given changes.
 func (sm ServicePortMap) Update(changes *ServiceChangeTracker) (result UpdateServiceMapResult) {
-	result.DeletedUDPClusterIPs = sets.New[string]()
-	sm.apply(changes, result.DeletedUDPClusterIPs)
+	result.DeletedUDPServicePorts = []ServicePort{}
+	sm.apply(changes, &result.DeletedUDPServicePorts)
 	return result
 }
 
@@ -397,9 +396,9 @@ func (sct *ServiceChangeTracker) serviceToServiceMap(service *v1.Service) Servic
 	return svcPortMap
 }
 
-// apply the changes to ServicePortMap and update the deleted UDP cluster IP set.
+// apply the changes to ServicePortMap and update the deleted UDP ServicePort slice.
 // apply triggers processServiceMapChange on every change.
-func (sm *ServicePortMap) apply(changes *ServiceChangeTracker, deletedUDPClusterIPs sets.Set[string]) {
+func (sm *ServicePortMap) apply(changes *ServiceChangeTracker, deletedUDPServicePorts *[]ServicePort) {
 	changes.lock.Lock()
 	defer changes.lock.Unlock()
 	for _, change := range changes.items {
@@ -410,7 +409,7 @@ func (sm *ServicePortMap) apply(changes *ServiceChangeTracker, deletedUDPCluster
 		// filter out the Update event of current changes from previous changes before calling unmerge() so that can
 		// skip deleting the Update events.
 		change.previous.filter(change.current)
-		sm.unmerge(change.previous, deletedUDPClusterIPs)
+		sm.unmerge(change.previous, deletedUDPServicePorts)
 	}
 	// clear changes after applying them to ServicePortMap.
 	changes.items = make(map[types.NamespacedName]*serviceChange)
@@ -466,14 +465,14 @@ func (sm *ServicePortMap) filter(other ServicePortMap) {
 }
 
 // unmerge deletes all other ServicePortMap's elements from current ServicePortMap and
-// updates deletedUDPClusterIPs with all of the newly-deleted UDP cluster IPs.
-func (sm *ServicePortMap) unmerge(other ServicePortMap, deletedUDPClusterIPs sets.Set[string]) {
+// updates deletedUDPServicePorts with all of the newly-deleted UDP ServicePorts.
+func (sm *ServicePortMap) unmerge(other ServicePortMap, deletedUDPServicePorts *[]ServicePort) {
 	for svcPortName := range other {
 		info, exists := (*sm)[svcPortName]
 		if exists {
 			klog.V(4).InfoS("Removing service port", "portName", svcPortName)
 			if info.Protocol() == v1.ProtocolUDP {
-				deletedUDPClusterIPs.Insert(info.ClusterIP().String())
+				*deletedUDPServicePorts = append(*deletedUDPServicePorts, info)
 			}
 			delete(*sm, svcPortName)
 		} else {

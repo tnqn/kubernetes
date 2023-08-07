@@ -43,10 +43,10 @@ func parametersWithFamily(isIPv6 bool, parameters ...string) []string {
 	return parameters
 }
 
-// ClearEntriesForIP uses the conntrack tool to delete the conntrack entries
+// ClearEntriesForIPPort uses the conntrack tool to delete the conntrack entries
 // for the UDP connections specified by the given service IP
-func ClearEntriesForIP(execer exec.Interface, ip string, protocol v1.Protocol) error {
-	parameters := parametersWithFamily(utilnet.IsIPv6String(ip), "-D", "--orig-dst", ip, "-p", protoStr(protocol))
+func ClearEntriesForIPPort(execer exec.Interface, ip string, port int, protocol v1.Protocol) error {
+	parameters := parametersWithFamily(utilnet.IsIPv6String(ip), "-D", "--orig-dst", ip, "-p", protoStr(protocol), "--dport", strconv.Itoa(port))
 	err := Exec(execer, parameters...)
 	if err != nil && !strings.Contains(err.Error(), NoConnectionToDelete) {
 		// TODO: Better handling for deletion failure. When failure occur, stale udp connection may not get flushed.

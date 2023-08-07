@@ -205,7 +205,7 @@ func (c *AvailableConditionController) sync(key string) error {
 		Status:             apiregistrationv1.ConditionTrue,
 		LastTransitionTime: metav1.Now(),
 	}
-
+	``
 	// local API services are always considered available
 	if apiService.Spec.Service == nil {
 		apiregistrationv1apihelper.SetAPIServiceCondition(apiService, apiregistrationv1apihelper.NewLocalAvailableAPIServiceCondition())
