@@ -20,7 +20,7 @@ package kernel
 // (ref: https://github.com/torvalds/linux/commit/122ff243f5f104194750ecbc76d5946dd1eec934)
 const IPLocalReservedPortsNamespacedKernelVersion = "3.16"
 
-// IPVSConnReuseModeMinSupportedKernelVersion is the minium kernel version supporting net.ipv4.vs.conn_reuse_mode.
+// IPVSConnReuseModeMinSupportedKernelVersion is the minimum kernel version supporting net.ipv4.vs.conn_reuse_mode.
 // (ref: https://github.com/torvalds/linux/commit/d752c364571743d696c2a54a449ce77550c35ac5)
 const IPVSConnReuseModeMinSupportedKernelVersion = "4.1"
 
@@ -39,6 +39,10 @@ const TCPKeepAliveProbesNamespacedKernelVersion = "4.5"
 // TCPFinTimeoutNamespacedKernelVersion is the kernel version in which net.ipv4.tcp_fin_timeout was namespaced(netns).
 // (ref: https://github.com/torvalds/linux/commit/1e579caa18b96f9eb18f4f5416658cd15f37c062)
 const TCPFinTimeoutNamespacedKernelVersion = "4.6"
+
+// NFTablesSetConcatRangesMinSupportedKernelVersion is the minimum kernel version supporting concatenation of ranges for NFTables set.
+// (ref: https://github.com/torvalds/linux/commit/3c4287f62044a90e73a561aa05fc46e62da173da)
+const NFTablesSetConcatRangesMinSupportedKernelVersion = "5.6"
 
 // IPVSConnReuseModeFixedKernelVersion is the kernel version in which net.ipv4.vs.conn_reuse_mode was fixed.
 // (ref: https://github.com/torvalds/linux/commit/35dfb013149f74c2be1ff9c78f14e6a3cd1539d1)

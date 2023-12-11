@@ -39,6 +39,7 @@ import (
 	discovery "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/events"
 	utilsysctl "k8s.io/component-helpers/node/util/sysctl"
@@ -51,6 +52,7 @@ import (
 	proxyutil "k8s.io/kubernetes/pkg/proxy/util"
 	proxyutiliptables "k8s.io/kubernetes/pkg/proxy/util/iptables"
 	"k8s.io/kubernetes/pkg/util/async"
+	utilkernel "k8s.io/kubernetes/pkg/util/kernel"
 	utilexec "k8s.io/utils/exec"
 	netutils "k8s.io/utils/net"
 	"k8s.io/utils/ptr"
@@ -216,6 +218,15 @@ func NewProxier(ipFamily v1.IPFamily,
 	if val, err := sysctl.GetSysctl(sysctlNFConntrackTCPBeLiberal); err == nil && val != 0 {
 		conntrackTCPLiberal = true
 		klog.InfoS("nf_conntrack_tcp_be_liberal set, not installing DROP rules for INVALID packets")
+	}
+
+	kernelVersion, err := utilkernel.GetVersion()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get kernel version: %w", err)
+	}
+
+	if kernelVersion.LessThan(version.MustParseGeneric(utilkernel.NFTablesSetConcatRangesMinSupportedKernelVersion)) {
+		return nil, fmt.Errorf("can't use nftables mode, kernel version %s doesn't satisfy minimum version requirement: %s", kernelVersion, utilkernel.NFTablesSetConcatRangesMinSupportedKernelVersion)
 	}
 
 	if initOnly {
