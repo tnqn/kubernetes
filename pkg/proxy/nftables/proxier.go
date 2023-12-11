@@ -76,10 +76,8 @@ const (
 	kubeRejectChain            = "reject-chain"
 
 	// LoadBalancerSourceRanges handling
-	kubeFirewallSet             = "firewall"
-	kubeFirewallCheckChain      = "firewall-check"
-	kubeFirewallAllowSet        = "firewall-allow"
-	kubeFirewallAllowCheckChain = "firewall-allow-check"
+	kubeFirewallSet        = "firewall"
+	kubeFirewallCheckChain = "firewall-check"
 
 	// masquerading
 	kubeMarkMasqChain     = "mark-for-masquerade"
@@ -99,6 +97,7 @@ type servicePortInfo struct {
 	clusterPolicyChainName string
 	localPolicyChainName   string
 	externalChainName      string
+	firewallChainName      string
 }
 
 // returns a new proxy.ServicePort which abstracts a serviceInfo
@@ -114,6 +113,7 @@ func newServiceInfo(port *v1.ServicePort, service *v1.Service, bsvcPortInfo *pro
 	svcPort.clusterPolicyChainName = servicePortPolicyClusterChainNamePrefix + chainNameBase
 	svcPort.localPolicyChainName = servicePortPolicyLocalChainNamePrefix + chainNameBase
 	svcPort.externalChainName = serviceExternalChainNamePrefix + chainNameBase
+	svcPort.firewallChainName = servicePortFirewallChainNamePrefix + chainNameBase
 
 	return svcPort
 }
@@ -548,32 +548,15 @@ func (proxier *Proxier) setupNFTables(tx *knftables.Transaction) {
 		Type:    ipvX_addr + " . inet_proto . inet_service",
 		Comment: ptr.To("destinations that are subject to LoadBalancerSourceRanges"),
 	})
-	tx.Add(&knftables.Set{
-		Name:    kubeFirewallAllowSet,
-		Type:    ipvX_addr + " . inet_proto . inet_service . " + ipvX_addr,
-		Flags:   []knftables.SetFlag{knftables.IntervalFlag},
-		Comment: ptr.To("destinations+sources that are allowed by LoadBalancerSourceRanges"),
-	})
 
 	ensureChain(kubeFirewallCheckChain, tx, createdChains)
-	ensureChain(kubeFirewallAllowCheckChain, tx, createdChains)
 	tx.Add(&knftables.Rule{
 		Chain: kubeFirewallCheckChain,
 		Rule: knftables.Concat(
 			ipX, "daddr", ".", "meta l4proto", ".", "th dport", "@", kubeFirewallSet,
-			"jump", kubeFirewallAllowCheckChain,
+			"drop",
 		),
-	})
-	tx.Add(&knftables.Rule{
-		Chain: kubeFirewallAllowCheckChain,
-		Rule: knftables.Concat(
-			ipX, "daddr", ".", "meta l4proto", ".", "th dport", ".", ipX, "saddr", "@", kubeFirewallAllowSet,
-			"return",
-		),
-	})
-	tx.Add(&knftables.Rule{
-		Chain: kubeFirewallAllowCheckChain,
-		Rule:  "drop",
+		Comment: ptr.To("LoadBalancer traffic not accepted by LoadBalancerSourceRanges"),
 	})
 
 	// Set up service dispatch
@@ -824,6 +807,7 @@ const (
 	serviceExternalChainNamePrefix          = "external-"
 	servicePortEndpointChainNamePrefix      = "endpoint-"
 	servicePortEndpointAffinityNamePrefix   = "affinity-"
+	servicePortFirewallChainNamePrefix      = "firewall-"
 )
 
 // hashAndTruncate prefixes name with a hash of itself and then truncates to
@@ -1001,9 +985,6 @@ func (proxier *Proxier) syncProxyRules() {
 	tx.Flush(&knftables.Set{
 		Name: kubeFirewallSet,
 	})
-	tx.Flush(&knftables.Set{
-		Name: kubeFirewallAllowSet,
-	})
 	tx.Flush(&knftables.Map{
 		Name: kubeNoEndpointServicesMap,
 	})
@@ -1113,6 +1094,17 @@ func (proxier *Proxier) syncProxyRules() {
 			ensureChain(externalTrafficChain, tx, activeChains)
 		}
 
+		// Traffic to LoadBalancer IPs can go directly to externalTrafficChain
+		// unless LoadBalancerSourceRanges is in use in which case we will
+		// create a firewall chain.
+		loadBalancerTrafficChain := externalTrafficChain
+		fwChain := svcInfo.firewallChainName
+		usesFWChain := hasEndpoints && len(svcInfo.LoadBalancerVIPStrings()) > 0 && len(svcInfo.LoadBalancerSourceRanges()) > 0
+		if usesFWChain {
+			ensureChain(fwChain, tx, activeChains)
+			loadBalancerTrafficChain = fwChain
+		}
+
 		var internalTrafficFilterVerdict, externalTrafficFilterVerdict string
 		if !hasEndpoints {
 			// The service has no endpoints at all; hasInternalEndpoints and
@@ -1216,7 +1208,7 @@ func (proxier *Proxier) syncProxyRules() {
 						strconv.Itoa(svcInfo.Port()),
 					},
 					Value: []string{
-						fmt.Sprintf("goto %s", externalTrafficChain),
+						fmt.Sprintf("goto %s", loadBalancerTrafficChain),
 					},
 				})
 			}
@@ -1232,22 +1224,17 @@ func (proxier *Proxier) syncProxyRules() {
 					Comment: &svcPortNameString,
 				})
 
+				var sources []string
 				allowFromNode := false
 				for _, src := range svcInfo.LoadBalancerSourceRanges() {
 					_, cidr, _ := netutils.ParseCIDRSloppy(src)
 					if cidr == nil {
 						continue
 					}
-					tx.Add(&knftables.Element{
-						Set: kubeFirewallAllowSet,
-						Key: []string{
-							lbip,
-							protocol,
-							strconv.Itoa(svcInfo.Port()),
-							src,
-						},
-						Comment: &svcPortNameString,
-					})
+					if len(sources) > 0 {
+						sources = append(sources, ",")
+					}
+					sources = append(sources, src)
 					if cidr.Contains(proxier.nodeIP) {
 						allowFromNode = true
 					}
@@ -1258,16 +1245,16 @@ func (proxier *Proxier) syncProxyRules() {
 				// will loop back with the source IP set to the VIP.  We
 				// need the following rules to allow requests from this node.
 				if allowFromNode {
-					tx.Add(&knftables.Element{
-						Set: kubeFirewallAllowSet,
-						Key: []string{
-							lbip,
-							protocol,
-							strconv.Itoa(svcInfo.Port()),
-							lbip,
-						},
-					})
+					sources = append(sources, ",", lbip)
 				}
+				tx.Add(&knftables.Rule{
+					Chain: fwChain,
+					Rule: knftables.Concat(
+						ipX, "saddr", "{", sources, "}",
+						"goto", externalTrafficChain,
+					),
+					Comment: ptr.To("LoadBalancer traffic allowed by LoadBalancerSourceRanges"),
+				})
 			}
 		}
 		if !hasExternalEndpoints {

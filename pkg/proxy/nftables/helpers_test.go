@@ -207,6 +207,26 @@ func (tracer *nftablesTracer) addressMatches(ipStr, not, ruleAddress string) boo
 	}
 }
 
+func (tracer *nftablesTracer) addressesMatches(ipStr, not, ruleAddress string) bool {
+	ruleAddress = strings.Replace(ruleAddress, " ", "", -1)
+	addresses := strings.Split(ruleAddress, ",")
+	if not == "!=" {
+		for _, address := range addresses {
+			if !tracer.addressMatches(ipStr, not, address) {
+				return false
+			}
+		}
+		return true
+	} else {
+		for _, address := range addresses {
+			if tracer.addressMatches(ipStr, not, address) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // matchDestIPOnly checks an "ip daddr" against a set/map, and returns the matching
 // Element, if found.
 func (tracer *nftablesTracer) matchDestIPOnly(elements []*knftables.Element, destIP string) *knftables.Element {
@@ -264,6 +284,7 @@ func (tracer *nftablesTracer) matchDestPort(elements []*knftables.Element, proto
 // match verdictRegexp.
 
 var destAddrRegexp = regexp.MustCompile(`^ip6* daddr (!= )?(\S+)`)
+var destAddrsRegexp = regexp.MustCompile(`^ip6* daddr (!= )?\{(.*)\}`)
 var destAddrLocalRegexp = regexp.MustCompile(`^fib daddr type local`)
 var destPortRegexp = regexp.MustCompile(`^(tcp|udp|sctp) dport (\d+)`)
 var destIPOnlyLookupRegexp = regexp.MustCompile(`^ip6* daddr @(\S+)`)
@@ -275,6 +296,7 @@ var destDispatchRegexp = regexp.MustCompile(`^ip6* daddr \. meta l4proto \. th d
 var destPortDispatchRegexp = regexp.MustCompile(`^meta l4proto \. th dport vmap @(\S+)$`)
 
 var sourceAddrRegexp = regexp.MustCompile(`^ip6* saddr (!= )?(\S+)`)
+var sourceAddrsRegexp = regexp.MustCompile(`^ip6* saddr (!= )?\{(.*)\}`)
 var sourceAddrLocalRegexp = regexp.MustCompile(`^fib saddr type local`)
 
 var endpointVMAPRegexp = regexp.MustCompile(`^numgen random mod \d+ vmap \{(.*)\}$`)
@@ -304,11 +326,11 @@ var ignoredRegexp = regexp.MustCompile(strings.Join(
 
 // runChain runs the given packet through the rules in the given table and chain, updating
 // tracer's internal state accordingly. It returns true if it hits a terminal action.
-func (tracer *nftablesTracer) runChain(chname, sourceIP, protocol, destIP, destPort string) bool {
+func (tracer *nftablesTracer) runChain(chname, sourceIP, protocol, destIP, destPort string) (newSourceIP, newDestIP, newDestPort string, terminated bool) {
 	ch := tracer.nft.Table.Chains[chname]
 	if ch == nil {
 		tracer.t.Errorf("unknown chain %q", chname)
-		return true
+		return sourceIP, destIP, destPort, true
 	}
 
 	for _, ruleObj := range ch.Rules {
@@ -397,6 +419,17 @@ func (tracer *nftablesTracer) runChain(chname, sourceIP, protocol, destIP, destP
 					rule = element.Value[0]
 				}
 
+			case destAddrsRegexp.MatchString(rule):
+				// `^ip6* daddr (!= )?\{(.*)\}`
+				// Tests whether destIP does/doesn't match an anonymous set.
+				match := destAddrsRegexp.FindStringSubmatch(rule)
+				rule = strings.TrimPrefix(rule, match[0])
+				not, ips := match[1], match[2]
+				if !tracer.addressesMatches(destIP, not, ips) {
+					rule = ""
+					break
+				}
+
 			case destAddrRegexp.MatchString(rule):
 				// `^ip6* daddr (!= )?(\S+)`
 				// Tests whether destIP does/doesn't match a literal.
@@ -425,6 +458,17 @@ func (tracer *nftablesTracer) runChain(chname, sourceIP, protocol, destIP, destP
 				rule = strings.TrimPrefix(rule, match[0])
 				proto, port := match[1], match[2]
 				if protocol != proto || destPort != port {
+					rule = ""
+					break
+				}
+
+			case sourceAddrsRegexp.MatchString(rule):
+				// `^ip6* saddr (!= )?\{(.*)\}`
+				// Tests whether sourceIP does/doesn't match an anonymous set.
+				match := sourceAddrsRegexp.FindStringSubmatch(rule)
+				rule = strings.TrimPrefix(rule, match[0])
+				not, ips := match[1], match[2]
+				if !tracer.addressesMatches(sourceIP, not, ips) {
 					rule = ""
 					break
 				}
@@ -469,16 +513,17 @@ func (tracer *nftablesTracer) runChain(chname, sourceIP, protocol, destIP, destP
 				action, destChain := match[1], match[2]
 
 				tracer.matches = append(tracer.matches, ruleObj.Rule)
-				terminated := tracer.runChain(destChain, sourceIP, protocol, destIP, destPort)
+				var terminated bool
+				sourceIP, destIP, destPort, terminated = tracer.runChain(destChain, sourceIP, protocol, destIP, destPort)
 				if terminated {
 					// destChain reached a terminal statement, so we
 					// terminate too.
-					return true
+					return sourceIP, destIP, destPort, true
 				} else if action == "goto" {
 					// After a goto, return to our calling chain
 					// (without terminating) rather than continuing
 					// with this chain.
-					return false
+					return sourceIP, destIP, destPort, false
 				}
 
 			case verdictRegexp.MatchString(rule):
@@ -489,13 +534,13 @@ func (tracer *nftablesTracer) runChain(chname, sourceIP, protocol, destIP, destP
 
 				tracer.matches = append(tracer.matches, ruleObj.Rule)
 				tracer.outputs = append(tracer.outputs, strings.ToUpper(verdict))
-				return true
+				return sourceIP, destIP, destPort, true
 
 			case returnRegexp.MatchString(rule):
 				// `^return$`
 				// Returns to the calling chain.
 				tracer.matches = append(tracer.matches, ruleObj.Rule)
-				return false
+				return sourceIP, destIP, destPort, false
 
 			case dnatRegexp.MatchString(rule):
 				// `meta l4proto (tcp|udp|sctp) dnat to (\S+)`
@@ -505,7 +550,8 @@ func (tracer *nftablesTracer) runChain(chname, sourceIP, protocol, destIP, destP
 
 				tracer.matches = append(tracer.matches, ruleObj.Rule)
 				tracer.outputs = append(tracer.outputs, destEndpoint)
-				return true
+				fields := strings.Split(destEndpoint, ":")
+				return sourceIP, fields[0], fields[1], true
 
 			case endpointVMAPRegexp.MatchString(rule):
 				// `^numgen random mod \d+ vmap \{(.*)\}$`
@@ -519,12 +565,13 @@ func (tracer *nftablesTracer) runChain(chname, sourceIP, protocol, destIP, destP
 					destChain := match[1]
 
 					tracer.matches = append(tracer.matches, ruleObj.Rule)
-					// Ignore return value; we know each endpoint has a
-					// terminating dnat verdict, but we want to gather all
-					// of the endpoints into tracer.output.
-					_ = tracer.runChain(destChain, sourceIP, protocol, destIP, destPort)
+					// Apply the last Endpoint's dnat verdict and ignore other
+					// return value; we know each endpoint has a terminating
+					// dnat verdict, but we want to gather all of the endpoints
+					// into tracer.output.
+					_, newDestIP, newDestPort, _ = tracer.runChain(destChain, sourceIP, protocol, destIP, destPort)
 				}
-				return true
+				return sourceIP, newDestIP, newDestPort, true
 
 			default:
 				tracer.t.Errorf("unmatched rule: %s", ruleObj.Rule)
@@ -533,7 +580,7 @@ func (tracer *nftablesTracer) runChain(chname, sourceIP, protocol, destIP, destP
 		}
 	}
 
-	return false
+	return sourceIP, destIP, destPort, false
 }
 
 // tracePacket determines what would happen to a packet with the given sourceIP, destIP,
@@ -557,16 +604,26 @@ func tracePacket(t *testing.T, nft *knftables.Fake, sourceIP, protocol, destIP, 
 		}
 	}
 
-	// Sort by priority
+	// Sort by hook and priority
 	sort.Slice(baseChains, func(i, j int) bool {
 		// FIXME: IPv4 vs IPv6 doesn't actually matter here
+		ihook := *nft.Table.Chains[baseChains[i]].Hook
+		jhook := *nft.Table.Chains[baseChains[j]].Hook
+		// Ensure prerouting hook is run first.
+		// This is not always correct but works for the existing tests.
+		if ihook == knftables.PreroutingHook {
+			return true
+		} else if jhook == knftables.PreroutingHook {
+			return false
+		}
 		iprio, _ := knftables.ParsePriority(knftables.IPv4Family, string(*nft.Table.Chains[baseChains[i]].Priority))
 		jprio, _ := knftables.ParsePriority(knftables.IPv4Family, string(*nft.Table.Chains[baseChains[j]].Priority))
 		return iprio < jprio
 	})
 
+	var terminated bool
 	for _, chname := range baseChains {
-		terminated := tracer.runChain(chname, sourceIP, protocol, destIP, destPort)
+		sourceIP, destIP, destPort, terminated = tracer.runChain(chname, sourceIP, protocol, destIP, destPort)
 		if terminated {
 			break
 		}
