@@ -35,6 +35,41 @@ func CleanStaleEntries(ct Interface, svcPortMap proxy.ServicePortMap,
 	deleteStaleEndpointConntrackEntries(ct, svcPortMap, endpointsUpdateResult)
 }
 
+func deleteStaleConntrackEntries(ct Interface, svcPortMap proxy.ServicePortMap, endpointsMap proxy.EndpointsMap) {
+	serviceIPs := map[string]proxy.ServicePortName{}
+	nodePorts := map[int]proxy.ServicePortName{}
+	isIPv6 := false
+	for svcPortName, svcInfo := range svcPortMap {
+		if svcPortName.Protocol != v1.ProtocolUDP {
+			continue
+		}
+		serviceIPs[svcInfo.ClusterIP().String()] = svcPortName
+		isIPv6 = netutils.IsIPv6(svcInfo.ClusterIP())
+		for _, extIP := range svcInfo.ExternalIPs() {
+			serviceIPs[extIP.String()] = svcPortName
+		}
+		for _, lbIP := range svcInfo.LoadBalancerVIPs() {
+			serviceIPs[lbIP.String()] = svcPortName
+		}
+		nodePort := svcInfo.NodePort()
+		if nodePort != 0 {
+			nodePorts[nodePort] = svcPortName
+		}
+	}
+	svcPortNameToEndpoints := map[proxy.ServicePortName]sets.Set[string]{}
+	for svcPortName, endpoints := range endpointsMap {
+		if svcPortName.Protocol != v1.ProtocolUDP {
+			continue
+		}
+		endpointSet := sets.New[string]()
+		for _, endpoint := range endpoints {
+			endpointSet.Insert(endpoint.String())
+		}
+		svcPortNameToEndpoints[svcPortName] = endpointSet
+	}
+	ct.ClearEntries(serviceIPs, nodePorts, svcPortNameToEndpoints, isIPv6, v1.ProtocolUDP)
+}
+
 // deleteStaleServiceConntrackEntries takes care of flushing stale conntrack entries related
 // to UDP Service IPs. When a service has no endpoints and we drop traffic to it, conntrack
 // may create "black hole" entries for that IP+port. When the service gets endpoints we

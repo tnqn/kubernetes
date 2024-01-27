@@ -21,6 +21,10 @@ package conntrack
 
 import (
 	"fmt"
+	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/kubernetes/pkg/proxy"
 	"strconv"
 	"strings"
 
@@ -47,11 +51,22 @@ type Interface interface {
 	// ClearEntriesForPortNAT deletes conntrack entries for connections of the given
 	// protocol, which had been DNATted from the given port (on any IP) to dest.
 	ClearEntriesForPortNAT(dest string, port int, protocol v1.Protocol) error
+
+	ClearEntries(servicePorts map[string]proxy.ServicePortName,
+		nodePorts map[int]proxy.ServicePortName,
+		svcPortNameToEndpointsMap map[proxy.ServicePortName]sets.Set[string],
+		isIPv6 bool,
+		protocol v1.Protocol) error
 }
 
 // execCT implements Interface by execing the conntrack tool
 type execCT struct {
 	execer exec.Interface
+}
+
+func (ct *execCT) ClearEntries(servicePorts map[string]proxy.ServicePortName, nodePorts map[int]proxy.ServicePortName, svcPortNameToEndpointsMap map[proxy.ServicePortName]sets.Set[string], isIPv6 bool, protocol v1.Protocol) error {
+	//TODO implement me
+	panic("implement me")
 }
 
 var _ Interface = &execCT{}
@@ -140,4 +155,138 @@ func (ct *execCT) ClearEntriesForPortNAT(dest string, port int, protocol v1.Prot
 		return fmt.Errorf("error deleting conntrack entries for UDP port: %d, error: %v", port, err)
 	}
 	return nil
+}
+
+type netlinkCT struct {
+	netlinkHandle *netlink.Handle
+}
+
+var _ Interface = &netlinkCT{}
+
+func NewNetlink() Interface {
+	return &netlinkCT{}
+}
+
+func (n *netlinkCT) ClearEntriesForIP(ip string, protocol v1.Protocol) error {
+	parsedIP := utilnet.ParseIPSloppy(ip)
+	filter := &customFilter{matchFn: func(flow *netlink.ConntrackFlow) bool {
+		if nl.L4ProtoMap[flow.Forward.Protocol] != protoStr(protocol) {
+			return false
+		}
+		if flow.Forward.DstIP.Equal(parsedIP) {
+			return false
+		}
+		return true
+	}}
+	matched, err := n.netlinkHandle.ConntrackDeleteFilter(netlink.ConntrackTable, getInetFamily(utilnet.IsIPv6(parsedIP)), filter)
+	if err != nil {
+		return err
+	}
+	klog.V(4).InfoS("Conntrack entries deleted", "matched", matched)
+	return nil
+}
+
+func (n *netlinkCT) ClearEntriesForPort(port int, isIPv6 bool, protocol v1.Protocol) error {
+	filter := &customFilter{matchFn: func(flow *netlink.ConntrackFlow) bool {
+		if nl.L4ProtoMap[flow.Forward.Protocol] != protoStr(protocol) {
+			return false
+		}
+		if int(flow.Forward.DstPort) != port {
+			return false
+		}
+		return true
+	}}
+	matched, err := n.netlinkHandle.ConntrackDeleteFilter(netlink.ConntrackTable, getInetFamily(isIPv6), filter)
+	if err != nil {
+		return err
+	}
+	klog.V(4).InfoS("Conntrack entries deleted", "matched", matched)
+	return nil
+}
+
+func (n *netlinkCT) ClearEntriesForNAT(origin, dest string, protocol v1.Protocol) error {
+	originIP := utilnet.ParseIPSloppy(origin)
+	destIP := utilnet.ParseIPSloppy(dest)
+	filter := &customFilter{matchFn: func(flow *netlink.ConntrackFlow) bool {
+		if nl.L4ProtoMap[flow.Forward.Protocol] != protoStr(protocol) {
+			return false
+		}
+		if flow.Forward.DstIP.Equal(originIP) || flow.Reverse.SrcIP.Equal(destIP) {
+			return false
+		}
+		return true
+	}}
+	matched, err := n.netlinkHandle.ConntrackDeleteFilter(netlink.ConntrackTable, getInetFamily(utilnet.IsIPv6(originIP)), filter)
+	if err != nil {
+		return err
+	}
+	klog.V(4).InfoS("Conntrack entries deleted", "matched", matched)
+	return nil
+}
+
+func (n *netlinkCT) ClearEntriesForPortNAT(dest string, port int, protocol v1.Protocol) error {
+	destIP := utilnet.ParseIPSloppy(dest)
+	filter := &customFilter{matchFn: func(flow *netlink.ConntrackFlow) bool {
+		return nl.L4ProtoMap[flow.Forward.Protocol] == protoStr(protocol) &&
+			int(flow.Forward.DstPort) == port &&
+			flow.Reverse.SrcIP.Equal(destIP)
+	}}
+	matched, err := n.netlinkHandle.ConntrackDeleteFilter(netlink.ConntrackTable, getInetFamily(utilnet.IsIPv6(destIP)), filter)
+	if err != nil {
+		return err
+	}
+	klog.V(4).InfoS("Conntrack entries deleted", "matched", matched)
+	return nil
+}
+
+func (n *netlinkCT) ClearEntries(servicePorts map[string]proxy.ServicePortName,
+	nodePorts map[int]proxy.ServicePortName,
+	svcPortNameToEndpointsMap map[proxy.ServicePortName]sets.Set[string],
+	isIPv6 bool,
+	protocol v1.Protocol) error {
+	filter := &customFilter{matchFn: func(flow *netlink.ConntrackFlow) bool {
+		if nl.L4ProtoMap[flow.Forward.Protocol] != protoStr(protocol) {
+			return false
+		}
+		destIPPort := fmt.Sprintf("%s:%d", flow.Forward.DstIP, flow.Forward.DstPort)
+		svcPortName, exists := servicePorts[destIPPort]
+		if !exists {
+			svcPortName, exists = nodePorts[int(flow.Forward.DstPort)]
+			if !exists {
+				return false
+			}
+		}
+		endpoints, exists := svcPortNameToEndpointsMap[svcPortName]
+		if !exists {
+			return true
+		}
+		natIPPort := fmt.Sprintf("%s:%d", flow.Reverse.SrcIP, flow.Reverse.SrcPort)
+		_, exists = endpoints[natIPPort]
+		if exists {
+			return false
+		}
+		return true
+	}}
+	matched, err := n.netlinkHandle.ConntrackDeleteFilter(netlink.ConntrackTable, getInetFamily(isIPv6), filter)
+	if err != nil {
+		return err
+	}
+	klog.V(4).InfoS("Conntrack entries deleted", "matched", matched)
+	return nil
+}
+
+func getInetFamily(isIPv6 bool) netlink.InetFamily {
+	if isIPv6 {
+		return nl.FAMILY_V6
+	} else {
+		return nl.FAMILY_V4
+	}
+}
+
+type customFilter struct {
+	matchFn func(flow *netlink.ConntrackFlow) bool
+}
+
+func (c *customFilter) MatchConntrackFlow(flow *netlink.ConntrackFlow) bool {
+	return c.matchFn(flow)
 }
