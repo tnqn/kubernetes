@@ -163,6 +163,8 @@ type Proxier struct {
 	syncRunner           *async.BoundedFrequencyRunner // governs calls to syncProxyRules
 	syncPeriod           time.Duration
 
+	flushOnce sync.Once
+
 	// These are effectively const and do not need the mutex to be held.
 	nftables       knftables.Interface
 	masqueradeAll  bool
@@ -397,6 +399,19 @@ func (proxier *Proxier) setupNFTables(tx *knftables.Transaction) {
 
 	tx.Add(&knftables.Table{
 		Comment: ptr.To("rules for kube-proxy"),
+	})
+
+	// Do an extra "add+delete" once to ensure all previous base chains in the table
+	// will be recreated. Otherwise, altering properties of these objects may fail the
+	// transaction. For example, altering priorities of chains would fail.
+	proxier.flushOnce.Do(func() {
+		for _, bc := range nftablesBaseChains {
+			chain := &knftables.Chain{
+				Name: bc.name,
+			}
+			tx.Add(chain)
+			tx.Delete(chain)
+		}
 	})
 
 	// Create and flush base chains
