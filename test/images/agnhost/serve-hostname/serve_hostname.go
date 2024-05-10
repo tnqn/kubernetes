@@ -84,6 +84,7 @@ func main(cmd *cobra.Command, args []string) {
 		}()
 	}
 	if doUDP {
+		net.ListenPacket()
 		addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", port))
 		if err != nil {
 			log.Fatalf("Error from net.ResolveUDPAddr(): %s", err)
