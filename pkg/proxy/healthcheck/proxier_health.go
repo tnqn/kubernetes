@@ -18,6 +18,7 @@ package healthcheck
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -159,6 +160,12 @@ func (hs *ProxierHealthServer) NodeEligible() bool {
 	hs.lock.RLock()
 	defer hs.lock.RUnlock()
 	return hs.nodeEligible
+}
+
+// Runnable returns if healthz HTTP server should run.
+func (hs *ProxierHealthServer) Runnable() bool {
+	_, port, _ := net.SplitHostPort(hs.addr)
+	return port > 0
 }
 
 // Run starts the healthz HTTP server and blocks until it exits.
