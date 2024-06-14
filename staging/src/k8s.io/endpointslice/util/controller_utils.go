@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"hash"
+	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	"reflect"
 	"sort"
 
@@ -187,6 +188,45 @@ func GetServicesToUpdateOnPodChange(serviceLister v1listers.ServiceLister, old, 
 			utilruntime.HandleError(fmt.Errorf("unable to get pod %s/%s's service memberships: %v", oldPod.Namespace, oldPod.Name, err))
 		}
 		services = determineNeededServiceUpdates(oldServices, services, podChanged)
+	}
+
+	return services
+}
+
+// GetServicesToUpdateOnPodChange returns a set of Service keys for Services
+// that have potentially been affected by a change to this pod.
+func GetServicesToUpdateOnNodeChange(endpointSliceLister discoverylisters.EndpointSliceLister, old, cur interface{}) sets.String {
+	newNode := cur.(*v1.Node)
+	oldNode := old.(*v1.Node)
+
+	endpointSlices, err := endpointSliceLister.List(labels.Everything())
+	if err != nil {
+		utilruntime.HandleError(fmt.Errorf("unable to get pod %s/%s's service memberships: %v", newPod.Namespace, newPod.Name, err))
+		return sets.String{}
+	}
+	serviceKeys := sets.String{}
+	for _, endpointSlice := range endpointSlices {
+		for _, endpoint := range endpointSlice.Endpoints {
+			if endpoint.NodeName != nil && *endpoint.NodeName == newNode.Name {
+				key, err := uti.ServiceControllerKey(endpointSlice)
+				if err != nil {
+					utilruntime.HandleError(fmt.Errorf("Couldn't get key for EndpointSlice %+v: %v", endpointSlice, err))
+					return
+				}
+				serviceKeys.Insert(cache.MetaObjectToName(service).String())
+			}
+		}
+		if endpointSlice.Selector == nil {
+			// if the service has a nil selector this means selectors match nothing, not everything.
+			continue
+		}
+		key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(service)
+		if err != nil {
+			return nil, err
+		}
+		if labels.ValidatedSetSelector(service.Spec.Selector).Matches(labels.Set(pod.Labels)) {
+			set.Insert(key)
+		}
 	}
 
 	return services
