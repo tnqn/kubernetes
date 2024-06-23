@@ -156,6 +156,7 @@ type Controller struct {
 	// workerLoopPeriod is the time between worker runs. The workers process the queue of service and pod changes.
 	workerLoopPeriod time.Duration
 
+	endpointsTracker *EndpointsTracker
 	// triggerTimeTracker is an util used to compute and export the EndpointsLastChangeTriggerTime
 	// annotation.
 	triggerTimeTracker *endpointsliceutil.TriggerTimeTracker
@@ -300,6 +301,16 @@ func (e *Controller) onServiceDelete(obj interface{}) {
 		utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %+v: %v", obj, err))
 		return
 	}
+	e.queue.Add(key)
+}
+
+func (e *Controller) onEndpointsUpdate(obj interface{}) {
+	key, err := controller.KeyFunc(obj)
+	if err != nil {
+		utilruntime.HandleError(fmt.Errorf("Couldn't get key for object %+v: %v", obj, err))
+		return
+	}
+	e.endpointsTracker.StaleEndpoints()
 	e.queue.Add(key)
 }
 
@@ -475,6 +486,10 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 		}
 	}
 
+	if e.endpointsTracker.StaleEndpoints(currentEndpoints) {
+		return fmt.Errorf("Endpoints informer cache is out of date")
+	}
+
 	createEndpoints := len(currentEndpoints.ResourceVersion) == 0
 
 	// Compare the sorted subsets and labels
@@ -526,12 +541,13 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 	}
 
 	logger.V(4).Info("Update endpoints", "service", klog.KObj(service), "readyEndpoints", totalReadyEps, "notreadyEndpoints", totalNotReadyEps)
+	var result *v1.Endpoints
 	if createEndpoints {
 		// No previous endpoints, create them
-		_, err = e.client.CoreV1().Endpoints(service.Namespace).Create(ctx, newEndpoints, metav1.CreateOptions{})
+		result, err = e.client.CoreV1().Endpoints(service.Namespace).Create(ctx, newEndpoints, metav1.CreateOptions{})
 	} else {
 		// Pre-existing
-		_, err = e.client.CoreV1().Endpoints(service.Namespace).Update(ctx, newEndpoints, metav1.UpdateOptions{})
+		result, err = e.client.CoreV1().Endpoints(service.Namespace).Update(ctx, newEndpoints, metav1.UpdateOptions{})
 	}
 	if err != nil {
 		if createEndpoints && errors.IsForbidden(err) {
@@ -555,6 +571,7 @@ func (e *Controller) syncService(ctx context.Context, key string) error {
 
 		return err
 	}
+	e.endpointsTracker.UpdateResourceVersion(result)
 	return nil
 }
 
